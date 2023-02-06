@@ -1,0 +1,258 @@
+---
+title: "data-cleaning"
+output: html_document
+date: "2023-02-06"
+---
+#NBA court dimensions
+```{r}
+#circle function
+circle_points <- function(center = c(0, 0), radius = 1, npoints = 360) {
+  angles = seq(0, 2 * pi, length.out = npoints)
+  return(data_frame(x = center[1] + radius * cos(angles),
+                    y = center[2] + radius * sin(angles)))
+}
+
+#nba court dimensions
+width <- 50
+height <- 94
+key_height <- 19
+inner_key_width <- 12
+outer_key_width <- 16
+backboard_width <- 6
+backboard_offset <- 4
+neck_length <- 0.5
+hoop_radius <- 0.75
+hoop_center_y <- backboard_offset + neck_length + hoop_radius
+three_point_radius <- 23.75
+three_point_side_radius <- 22
+three_point_side_height <- 14
+inner_tip_off_radius <- 2
+outer_tip_off_radius <- 6
+```
+
+#load data
+```{r}
+#free throws
+gameLogs <- read_csv("LeBronCareerGameLogs.csv")
+
+#field goals
+gameEvents <- read_csv("LeBronCareerFGA.csv")
+```
+
+#NBA.com cleaning
+```{r}
+#re-name to save original data (easy reset point)
+nbaShots <- gameEvents
+
+#lowercase column names
+colnames(nbaShots) <- tolower(colnames(nbaShots))
+colnames(nbaShots)
+
+#modify shot location distances
+nbaShots <- nbaShots %>% 
+  mutate(loc_x = loc_x / 10, loc_y = loc_y / 10 + hoop_center_y)
+
+#remove first column ("shot chart detail" column)
+nbaShots <- nbaShots[,-1]
+
+#cleaning up dataframe
+unique(nbaShots$shot_type)
+
+nbaShots$game_date <- paste0(nbaShots$game_year,"-", nbaShots$game_month,"-", nbaShots$game_day, sep ="")
+nbaShots$game_date <- ymd(nbaShots$game_date)
+```
+
+#bbRef cleaning
+```{r}
+#re-name to save original data (easy reset point)
+freeThrow_df <- gameLogs
+
+#column cleanup
+ftCols <- c(1:4, 16, 17, 32, 33)
+freeThrow_df <- freeThrow_df[, ftCols]
+
+#games with 0 FTA
+gamesWITHOUFTA <- freeThrow_df %>%
+  filter(fta == 0)
+
+#games with at least 1 FTA
+freeThrow_df <- freeThrow_df %>%
+  filter(fta > 0)
+
+#blank tibble
+ftDF <- tibble()
+
+
+#for loop to create event for each individual free throw (assigning location at FT Line)
+for (i in 1:nrow(freeThrow_df)) {
+  totFTA <- freeThrow_df[i,]$fta
+  totFTM <- freeThrow_df[i,]$ftm
+  misses <- totFTA - totFTM
+  
+  
+  freeThrowTable <- tibble(.rows = totFTA)
+  
+  attempt <- rep(1, totFTA)
+  gameDate <- rep(freeThrow_df[i,]$date, totFTA)
+  x <- rep(0, totFTA)
+  y <- rep(19, totFTA)
+  outcome <- rep(c(1,0), times = c(totFTM, misses))
+
+  
+  freeThrowTable <- freeThrowTable %>%
+    mutate(fta = attempt, ftm = outcome, dateOfGame = gameDate, x = x, y = y)
+  
+  ftDF <- ftDF %>%
+    bind_rows(freeThrowTable)
+}
+
+#make date column into date
+ftDF$dateOfGame <- date(ymd(ftDF$dateOfGame))
+
+#rename columns
+colnames(ftDF) <- c("shotAttempt", "shotMake", "game_date", "loc_x", "loc_y")
+
+#check DF
+ftDF
+```
+
+#bbRef + game info
+```{r}
+#game info for Free Throw table merge
+infCols <- c(1, 3:6, 21)
+gameInfo <- nbaShots[,infCols]
+gameInfo <- gameInfo %>%
+  distinct(game_id, .keep_all = TRUE)
+
+#game Info cleaning
+gameInfo$game_date <- ymd(gameInfo$game_date)
+gameInfo <- tibble(gameInfo)
+
+#MERGE
+freeThrows <- merge(x = ftDF, y = gameInfo, by = c("game_date"), all.x = TRUE)
+
+#check DF
+freeThrows %>%
+  group_by(player_id) %>%
+  summarise(fta = sum(shotAttempt), ftm = sum(shotMake))
+
+#adding columns to free throws for Bron bindings
+freeThrows <- freeThrows %>%
+  mutate(game_event_id = NA, period = sample(1:4, 1), minutes_remaining = sample(1:12, 1), seconds_remaining = sample(1:60, 1), event_type = ifelse(shotMake == 1, "Made Shot", "Missed Shot"), action_type = "Free Throw", shot_type = "1PT Free Throw", shot_zone_basic = "Free Throw Line", shot_zone_area = "Center(C)", shot_zone_range = "Free Throw", shot_distance = 19 - hoop_center_y, htm = NA, vtm = NA, game_year = as.numeric(substr(game_date, 1, 4)), game_month = as.numeric(substr(game_date, 6, 7)), game_day = as.numeric(substr(game_date, 9, 10)))
+
+colnames(nbaShots)
+
+colnames(freeThrows)
+
+#reorder columns
+freeThrows <- freeThrows[, c(6, 11, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 4, 5, 2, 3, 1, 22, 23, 24, 25, 26)]
+freeThrows
+
+freeThrows %>%
+  group_by(player_id) %>%
+  summarise(shotAttempt = sum(shotAttempt), shotsMade = sum(shotMake))
+```
+
+#matching column names
+```{r}
+colnames(nbaShots) <- colnames(freeThrows)
+colnames(nbaShots)
+```
+
+#bind FTA and FGA
+```{r}
+#bind all shots together
+careerShots <- bind_rows(nbaShots, freeThrows)
+
+careerShots <- careerShots %>%
+  mutate(pointsAttempted = ifelse(str_detect(shot_type, "3PT"), 3, ifelse(str_detect(shot_type, "2PT"), 2, ifelse(str_detect(shot_type, "1PT"), 1, 0))), pointsScored = pointsAttempted * shotMake)
+
+#total points check
+careerShots %>%
+  group_by(player_id) %>%
+  summarise(totalPoints = sum(pointsScored))
+
+#opponent info
+careerShots <- careerShots %>%
+  add_column(teamAbb = ifelse(careerShots$team_name == "Los Angeles Lakers", "LAL", ifelse(careerShots$team_name == "Miami Heat", "MIA", ifelse(careerShots$team_name == "Cleveland Cavaliers", "CLE", NA))), .after = "team_name")
+
+homeAway <- careerShots %>%
+  group_by(game_id, htm, vtm) %>%
+  filter(!is.na(htm) & !is.na(vtm)) %>%
+  summarise()
+
+careerShots <- careerShots[,-c(23,24)]
+
+careerShots <- merge(x = careerShots, y = homeAway, by = "game_id", all.x = TRUE)
+
+careerShots <- careerShots %>%
+  add_column(oppAbb = ifelse(careerShots$teamAbb == careerShots$htm, careerShots$vtm, ifelse(careerShots$teamAbb == careerShots$vtm, careerShots$htm, NA)), .after = "teamAbb")
+
+careerShots <- careerShots %>%
+  add_column(gameLocation = ifelse(careerShots$teamAbb == careerShots$htm, "Home", ifelse(careerShots$teamAbb == careerShots$vtm, "Away", NA)), .after = "oppAbb")
+
+unique(careerShots$pointsScored)
+```
+
+#team colors
+```{r}
+tc <- teamcolors::teamcolors
+
+#keep only NBA colors
+tc <- tc %>%
+  filter(league == "nba")
+
+#clean team colors cols
+keepcolorCols <- c(1, 3:9)
+tc <- tc[,keepcolorCols]
+
+unique(careerShots$oppAbb)
+
+#modify
+career <- merge(careerShots, tc, by.x = "team_name", by.y = "name", all.x = TRUE)
+colnames(career)[32] = "teamPrimary"
+colnames(career)[33] = "teamSecondary"
+colnames(career)[34] = "teamTertiary"
+colnames(career)[35] = "teamQuarternary"
+colnames(career)[36] = "teamDivision"
+colnames(career)[37] = "teamLocation"
+colnames(career)[38] = "teamMascot"
+
+unique(career$oppAbb)
+
+career <- career %>%
+  mutate(oppAbb = ifelse(oppAbb == "NOH", "NOP", ifelse(oppAbb == "NOK", "NOP", ifelse(oppAbb == "NJN", "BKN", ifelse(oppAbb == "SEA", "OKC", oppAbb)))))
+
+tc$teamAbb <- toupper(substr(tc$location, 0,3))
+tc <- tc %>%
+  mutate(teamAbb = ifelse(location == "Brooklyn", "BKN", ifelse(location == "Golden State", "GSW", ifelse(mascot == "Clippers", "LAC", ifelse(mascot == "Lakers", "LAL", ifelse(mascot == "Pelicans", "NOP", ifelse(mascot == "Knicks", "NYK", ifelse(mascot == "Thunder", "OKC", ifelse(location == "Phoenix", "PHX", ifelse(mascot == "Spurs", "SAS", teamAbb))))))))))
+
+career <- merge(career, tc, by.x = "oppAbb", by.y = "teamAbb", all.x = TRUE)
+colnames(career)[39] = "oppName"
+colnames(career)[40] = "oppPrimary"
+colnames(career)[41] = "oppSecondary"
+colnames(career)[42] = "oppTertiary"
+colnames(career)[43] = "oppQuarternary"
+colnames(career)[44] = "oppDivision"
+colnames(career)[45] = "oppLocation"
+colnames(career)[46] = "oppMascot"
+
+unique(career$oppAbb)
+
+career %>%
+  group_by(player_id) %>%
+  summarise(tp = sum(pointsScored))
+
+cShots <- career
+```
+
+#cleaned table
+```{r}
+#table
+cShots
+
+#final check
+cShots %>%
+  group_by(player_id) %>%
+  summarise(points = sum(pointsScored))
+```
