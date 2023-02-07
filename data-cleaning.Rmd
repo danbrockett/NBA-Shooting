@@ -255,4 +255,7 @@ cShots
 cShots %>%
   group_by(player_id) %>%
   summarise(points = sum(pointsScored))
+  
+ #save cleaned table
+ write_csv(cShots, "LeBronCareerShots.csv")
 ```
